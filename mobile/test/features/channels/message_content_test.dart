@@ -5,7 +5,10 @@ import 'package:hooks_riverpod/misc.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:nostr/nostr.dart' as nostr;
 import 'package:buzz/features/channels/message_content.dart';
+import 'package:buzz/features/channels/mentions/mention_candidates_provider.dart';
 import 'package:buzz/features/channels/media_viewer_page.dart';
+import 'package:buzz/features/profile/user_cache_provider.dart';
+import 'package:buzz/features/profile/user_profile.dart';
 import 'package:buzz/shared/relay/relay.dart';
 import 'package:buzz/shared/theme/theme.dart';
 
@@ -28,6 +31,29 @@ Widget _testable(
       ),
     ),
   );
+}
+
+class _CachedAgentProfileNotifier extends UserCacheNotifier {
+  @override
+  Map<String, UserProfile> build() => const {
+    'agent-pubkey': UserProfile(
+      pubkey: 'agent-pubkey',
+      displayName: 'Helper Bot',
+      ownerPubkey: 'owner-pubkey',
+    ),
+  };
+}
+
+class _RecordingUserCacheNotifier extends UserCacheNotifier {
+  final List<String> preloadedPubkeys = [];
+
+  @override
+  Map<String, UserProfile> build() => const {};
+
+  @override
+  void preload(List<String> pubkeys) {
+    preloadedPubkeys.addAll(pubkeys);
+  }
 }
 
 void _setSurfaceSize(WidgetTester tester, Size size) {
@@ -1114,6 +1140,78 @@ Photos
         // separately so they can be aligned independently.
         expect(find.text('@'), findsOneWidget);
         expect(find.text('Alice'), findsOneWidget);
+      });
+
+      testWidgets('renders a known agent mention with the bot chip', (
+        tester,
+      ) async {
+        await tester.pumpWidget(
+          _testable(
+            const MessageContent(
+              content: 'Ask @Helper Bot to investigate',
+              mentionNames: {'agent-pubkey': 'Helper Bot'},
+            ),
+            overrides: [
+              knownAgentPubkeysProvider.overrideWith(
+                (ref) => const {'agent-pubkey'},
+              ),
+            ],
+          ),
+        );
+
+        expect(find.byIcon(LucideIcons.bot), findsOneWidget);
+        expect(find.text('@'), findsNothing);
+        expect(find.text('Helper Bot'), findsOneWidget);
+      });
+
+      testWidgets('normalizes cached multi-word agent mentions', (
+        tester,
+      ) async {
+        await tester.pumpWidget(
+          _testable(
+            const MessageContent(
+              content: 'Ask @Helper Bot to investigate',
+              tags: [
+                ['p', 'agent-pubkey'],
+              ],
+            ),
+            overrides: [
+              userCacheProvider.overrideWith(_CachedAgentProfileNotifier.new),
+              knownAgentPubkeysProvider.overrideWith(
+                (ref) => const {'agent-pubkey'},
+              ),
+            ],
+          ),
+        );
+
+        expect(find.byIcon(LucideIcons.bot), findsOneWidget);
+        expect(find.text('Helper Bot'), findsOneWidget);
+        expect(_allRichText(tester), isNot(contains('Bot Bot')));
+      });
+
+      testWidgets('preloads profiles referenced only by mention tags', (
+        tester,
+      ) async {
+        late _RecordingUserCacheNotifier cache;
+        await tester.pumpWidget(
+          _testable(
+            const MessageContent(
+              content: 'Ask @Helper Bot to investigate',
+              tags: [
+                ['p', 'agent-pubkey'],
+              ],
+            ),
+            overrides: [
+              userCacheProvider.overrideWith(() {
+                cache = _RecordingUserCacheNotifier();
+                return cache;
+              }),
+            ],
+          ),
+        );
+        await tester.pump();
+
+        expect(cache.preloadedPubkeys, contains('agent-pubkey'));
       });
 
       testWidgets('highlights an entire multi-word display name', (

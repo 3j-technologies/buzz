@@ -19,8 +19,10 @@ import '../../shared/theme/theme.dart';
 import '../../shared/custom_emoji/custom_emoji.dart';
 import '../../shared/custom_emoji/custom_emoji_provider.dart';
 import '../../shared/custom_emoji/custom_emoji_render.dart';
+import '../profile/user_cache_provider.dart';
 import 'media_viewer_page.dart';
 import 'message_media.dart';
+import 'mentions/mention_candidates_provider.dart';
 
 part 'message_content/media_carousel.dart';
 
@@ -136,6 +138,38 @@ class MessageContent extends HookConsumerWidget {
     final style =
         baseStyle ??
         context.textTheme.bodyMedium?.copyWith(color: context.colors.onSurface);
+    final mentionedPubkeys = {
+      ...mentionNames.keys.map((pubkey) => pubkey.toLowerCase()),
+      for (final tag in tags)
+        if (tag.length >= 2 && (tag[0] == 'p' || tag[0] == 'mention'))
+          tag[1].toLowerCase(),
+    };
+    final mentionedPubkeysKey = (mentionedPubkeys.toList()..sort()).join(
+      '\u0000',
+    );
+    useEffect(() {
+      if (mentionedPubkeys.isNotEmpty) {
+        ref.read(userCacheProvider.notifier).preload(mentionedPubkeys.toList());
+      }
+      return null;
+    }, [mentionedPubkeysKey]);
+    final cachedMentionNames = ref.watch(
+      userCacheProvider.select(
+        (cache) => {
+          for (final pubkey in mentionedPubkeys)
+            if (cache[pubkey]?.displayName?.trim().isNotEmpty == true)
+              pubkey: cache[pubkey]!.displayName!.trim(),
+        },
+      ),
+    );
+    final resolvedMentionNames = {...cachedMentionNames, ...mentionNames};
+    final knownAgentPubkeys = ref.watch(knownAgentPubkeysProvider);
+    final resolvedAgentMentionPubkeys = {
+      ...agentMentionPubkeys.map((pubkey) => pubkey.toLowerCase()),
+      for (final pubkey in resolvedMentionNames.keys)
+        if (knownAgentPubkeys.contains(pubkey.toLowerCase()))
+          pubkey.toLowerCase(),
+    };
     final imetaByUrl = parseImetaTags(tags);
     final trailingGallery = maxLines == null
         ? _extractTrailingImageGallery(content, imetaByUrl)
@@ -191,7 +225,7 @@ class MessageContent extends HookConsumerWidget {
           mentionBuf.write('`${mentionParts[i]}`');
         } else {
           var segment = mentionParts[i];
-          for (final name in mentionNames.values) {
+          for (final name in resolvedMentionNames.values) {
             if (name.contains(' ')) {
               final normalizedName = _markdownMentionName(name);
               segment = segment.replaceAllMapped(
@@ -212,7 +246,7 @@ class MessageContent extends HookConsumerWidget {
         result = '\u200B$result';
       }
       return result;
-    }, [markdownContent, mentionNames]);
+    }, [markdownContent, resolvedMentionNames]);
 
     final markdown = GptMarkdown(
       finalContent,
@@ -227,8 +261,8 @@ class MessageContent extends HookConsumerWidget {
       maxLines: maxLines,
       inlineComponents: [
         _MentionMd(
-          mentionNames: mentionNames,
-          agentMentionPubkeys: agentMentionPubkeys,
+          mentionNames: resolvedMentionNames,
+          agentMentionPubkeys: resolvedAgentMentionPubkeys,
           onMentionTap: onMentionTap,
         ),
         CustomEmojiMd(customEmoji),
