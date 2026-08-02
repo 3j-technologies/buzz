@@ -2,7 +2,7 @@ name: buzz-prod
 
 services:
   relay:
-    image: ${BUZZ_IMAGE:-ghcr.io/block/buzz:main}
+    image: ${BUZZ_IMAGE:?set BUZZ_IMAGE}
     env_file:
       - .env
     environment:
@@ -44,6 +44,25 @@ services:
       timeout: 3s
       retries: 12
       start_period: 30s
+    restart: unless-stopped
+    networks:
+      - buzz-net
+
+  # Standalone web UI, built from web/Dockerfile with VITE_RELAY_URL baked in
+  # at image-build time (see that Dockerfile for why it can't be a runtime
+  # env var here). Not required by the relay — the relay serves its own copy
+  # of the same app same-origin — this is for exposing the UI on its own
+  # host/port pointed at a relay elsewhere.
+  buzz-web:
+    image: ${BUZZ_WEB_IMAGE:?set BUZZ_WEB_IMAGE}
+    ports:
+      - "${BUZZ_WEB_HTTP_PORT:-8081}:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
     restart: unless-stopped
     networks:
       - buzz-net
