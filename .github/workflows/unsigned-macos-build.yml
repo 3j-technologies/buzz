@@ -1,0 +1,166 @@
+name: Unsigned macOS Build
+
+# Produces an UNSIGNED Apple Silicon DMG pointed at our self-hosted relay, for
+# internal 3J distribution only. We do not have Apple codesign/notarization
+# credentials on this fork, so this intentionally skips
+# block/apple-codesign-action (see signed-macos-canary.yml, which is gated to
+# github.repository == 'block/buzz' and cannot run here). Installers built by
+# this workflow trigger a Gatekeeper warning on first launch — expected for
+# an unsigned build; see the run summary / INFRA-1029 for the workaround.
+#
+# Also skips the optional `mesh-llm` cargo feature (local on-device LLM chat)
+# entirely: its native llama.cpp/Metal build step is independently broken on
+# this fork (see INFRA-1029) and the feature is not in the crate's default
+# feature set, so building without it is a clean, supported configuration
+# rather than a workaround.
+on:
+  workflow_dispatch:
+    inputs:
+      relay_url:
+        description: "Relay WebSocket URL to bake into the build"
+        required: false
+        default: "wss://buzz.3jtech.app"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build unsigned macOS app
+    runs-on: macos-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - uses: cashapp/activate-hermit@cea9af7913204a965fd488637a8d1811bba2e616 # v1
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: |
+            .
+            desktop/src-tauri
+          shared-key: macos-unsigned-build
+
+      - name: Get pnpm store directory
+        id: pnpm-cache
+        run: echo "STORE_PATH=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore pnpm store cache
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: ${{ steps.pnpm-cache.outputs.STORE_PATH }}
+          key: pnpm-${{ runner.os }}-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: pnpm-${{ runner.os }}-
+
+      - name: Install desktop dependencies
+        run: just desktop-install-ci
+
+      - name: Derive build version
+        id: version
+        run: |
+          set -euo pipefail
+          BASE_VERSION=$(node -p "require('./desktop/package.json').version")
+          if ! [[ "$BASE_VERSION" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Desktop version '$BASE_VERSION' is not semver"
+            exit 1
+          fi
+          VERSION="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.$((BASH_REMATCH[3] + 1))-unsigned.${GITHUB_RUN_NUMBER}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Building unsigned version $VERSION from $GITHUB_SHA"
+
+      - name: Patch build version
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          cd desktop && node scripts/set-version-from-tag.mjs "$VERSION"
+          cd src-tauri && cargo update --workspace
+
+      - name: Generate non-updating bundle config
+        run: |
+          cat > desktop/src-tauri/tauri.unsigned.conf.json <<'JSON'
+          {
+            "bundle": {
+              "macOS": {
+                "minimumSystemVersion": "10.15"
+              },
+              "createUpdaterArtifacts": false
+            }
+          }
+          JSON
+
+      - name: Build sidecars
+        run: |
+          cargo build --release -p buzz-acp -p buzz-agent -p buzz-dev-mcp -p git-credential-nostr -p buzz-cli
+          ./scripts/bundle-sidecars.sh
+
+      - name: Build unsigned Tauri app
+        env:
+          BUZZ_RELAY_URL: ${{ github.event.inputs.relay_url }}
+          CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+          MACOSX_DEPLOYMENT_TARGET: "10.15"
+          CMAKE_OSX_DEPLOYMENT_TARGET: "10.15"
+          TAURI_BUNDLER_DMG_IGNORE_CI: "true"
+        run: cd desktop && pnpm tauri build --verbose --no-sign --config src-tauri/tauri.unsigned.conf.json
+
+      - name: Locate unsigned DMG
+        id: unsigned
+        run: |
+          DMG=$(find desktop/src-tauri/target/release/bundle/dmg -name '*.dmg' -type f | head -1)
+          if [[ -z "$DMG" ]]; then
+            echo "::error::No DMG found"
+            exit 1
+          fi
+          echo "dmg=$DMG" >> "$GITHUB_OUTPUT"
+
+      - name: Set DMG Finder label text size
+        env:
+          DMG_PATH: ${{ steps.unsigned.outputs.dmg }}
+        run: desktop/scripts/set-dmg-finder-text-size.sh "$DMG_PATH" 14
+
+      - name: Verify relay URL baked into build
+        env:
+          DMG_PATH: ${{ steps.unsigned.outputs.dmg }}
+          RELAY_URL: ${{ github.event.inputs.relay_url }}
+        run: |
+          set -euo pipefail
+          EXTRACT_DIR="${RUNNER_TEMP}/unsigned-app-extract"
+          rm -rf "$EXTRACT_DIR" && mkdir -p "$EXTRACT_DIR"
+          hdiutil attach "$DMG_PATH" -mountpoint "${RUNNER_TEMP}/dmg-mount" -nobrowse -quiet
+          BINARY="${RUNNER_TEMP}/dmg-mount/Buzz.app/Contents/MacOS/Buzz"
+          if ! strings "$BINARY" | grep -qF "$RELAY_URL"; then
+            hdiutil detach "${RUNNER_TEMP}/dmg-mount" -quiet || true
+            echo "::error::Relay URL $RELAY_URL not found baked into binary"
+            exit 1
+          fi
+          echo "Confirmed $RELAY_URL is baked into the Buzz binary."
+          hdiutil detach "${RUNNER_TEMP}/dmg-mount" -quiet
+
+      - name: Stage unsigned DMG
+        id: artifact
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          DMG_PATH: ${{ steps.unsigned.outputs.dmg }}
+        run: |
+          set -euo pipefail
+          NAME="Buzz_${VERSION}_aarch64-unsigned.dmg"
+          cp "$DMG_PATH" "$RUNNER_TEMP/$NAME"
+          echo "path=$RUNNER_TEMP/$NAME" >> "$GITHUB_OUTPUT"
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Upload unsigned build
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: buzz-macos-unsigned-${{ github.sha }}
+          path: ${{ steps.artifact.outputs.path }}
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Save pnpm store cache
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: ${{ steps.pnpm-cache.outputs.STORE_PATH }}
+          key: pnpm-${{ runner.os }}-${{ hashFiles('**/pnpm-lock.yaml') }}
