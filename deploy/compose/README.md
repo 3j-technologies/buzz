@@ -19,6 +19,21 @@ cd deploy/compose
 BUZZ_COMPOSE_TLS=true ./run.sh start
 ```
 
+To also run the standalone web UI container (`web/Dockerfile`) alongside the
+relay, set `BUZZ_WEB_IMAGE` in `.env` and add the overlay:
+
+```bash
+cd deploy/compose
+BUZZ_COMPOSE_WEB=true ./run.sh start
+```
+
+This is a separate compose file (`compose.web.yml`), not a service in the base
+`compose.yml`: Compose interpolates every `${VAR:?...}` in the whole merged
+file before it resolves which services a command targets, so putting
+`buzz-web` straight in the base file would make `BUZZ_WEB_IMAGE` required for
+every `config`/`ps`/`down`/`restart` call — even ones that never touch
+`buzz-web`. The overlay keeps the base relay stack operable without it.
+
 The bootstrap script should eventually replace manual `.env` editing for normal
 users. It is responsible for generating stable secrets and, optionally, an owner
 keypair.
@@ -27,7 +42,10 @@ keypair.
 
 - Requires Docker Compose v2.24.4 or newer; the TLS override uses Compose's
   `!reset` tag to remove the direct relay port when Caddy terminates HTTPS.
-- Default `BUZZ_IMAGE` tracks `ghcr.io/block/buzz:main` for early testing. Pin it to `ghcr.io/block/buzz:sha-<7>` or a semver release tag for production once available.
+- `BUZZ_IMAGE` is required (`.env` has no default) — set it explicitly, e.g.
+  `ghcr.io/block/buzz:sha-<7>` or a semver release tag for production, `:main`
+  only for early testing. Same for `BUZZ_WEB_IMAGE` when using
+  `BUZZ_COMPOSE_WEB=true`.
 - Keep `BUZZ_RELAY_PRIVATE_KEY`, `BUZZ_GIT_HOOK_HMAC_SECRET`, database/Redis,
   and S3 secrets stable across restarts.
 - `RELAY_OWNER_PUBKEY` is intentionally not prefixed with `BUZZ_`; it must be a

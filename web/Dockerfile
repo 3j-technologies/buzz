@@ -71,12 +71,19 @@ RUN pnpm -C web build
 # ─── Stage 2: serve the static bundle ───────────────────────────────────────
 FROM nginx:${NGINX_VERSION} AS runtime
 
+# Re-declared here: ARGs from before the first FROM don't survive into a later
+# stage unless re-declared. Recorded as a label because the tag alone (:main,
+# :sha-<7>) doesn't say which relay this bundle points at, and that stops
+# being obvious the moment a second relay URL exists in the fleet.
+ARG VITE_RELAY_URL
+
 LABEL org.opencontainers.image.title="Buzz Web" \
       org.opencontainers.image.description="Standalone web UI for the Buzz communications platform" \
       org.opencontainers.image.source="https://github.com/block/buzz" \
       org.opencontainers.image.url="https://github.com/block/buzz" \
       org.opencontainers.image.documentation="https://github.com/block/buzz#readme" \
       org.opencontainers.image.licenses="Apache-2.0"
+LABEL com.buzz.relay-url="${VITE_RELAY_URL}"
 
 COPY web/nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=builder /build/web/dist /usr/share/nginx/html
