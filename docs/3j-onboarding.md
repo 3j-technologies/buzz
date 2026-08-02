@@ -19,18 +19,22 @@ idea it existed: this doc is for you.
 
 ## How to get on it today
 
-**⚠️ Honest status: there is currently no easy, ready-to-use client for a
-non-technical teammate.** Both routes below have real gaps — read them
-before you spend time on either.
+**⚠️ Honest status: there is no ready-to-use build to hand a non-technical
+teammate yet.** Desktop is the real client — not web. Read this before you
+go looking for a login screen in the wrong place.
 
-### Web client — `https://buzz-web.3jtech.app`
+### Web client — `https://buzz-web.3jtech.app` — is a repo browser, by design
 
-This is **not a usable chat client yet**. It loads (HTTP 200) but has **no
-sign-in / npub / nsec surface at all** — it's a repo browser, not a login
-screen. There is nothing to click to get into a conversation. Don't spend
-time looking for a "sign in" button; it doesn't exist yet on this build.
+This is **not, and was never meant to be, a chat client.** It loads (HTTP
+200) but has no sign-in / npub / nsec surface — that's not a bug or a
+missing feature, it's the same behaviour Block's own upstream `web/` app
+has (its routes are `index`, `invite.$code`, `repos`, `repos.$repoId`,
+`repos.$repoId.blob.$` — a repository browser, nothing chat-shaped). Don't
+look for a "sign in" button here; it doesn't exist because this surface
+doesn't do chat. **Desktop is where the actual chat UI lives** (channels,
+posts, messages, agents-in-channels) — see below.
 
-### Desktop (Tauri app)
+### Desktop (Tauri app) — the real client, but no build to hand out yet
 
 The desktop app *can* be pointed at our relay — this is confirmed by
 reading the source, not by producing a working build:
@@ -45,24 +49,38 @@ reading the source, not by producing a working build:
   when you launch the app overrides a build that was compiled pointing
   somewhere else.
 
-**There is no distributable desktop build for the team yet.** The repo's
-canary/release workflows (`signed-macos-canary.yml`, `windows-canary.yml`,
-`linux-canary.yml`, `release.yml`) all contain the same guard:
+**There is no distributable desktop build for the team yet, and this is
+not just fork staleness.** We checked against upstream `block/buzz`
+directly (our fork is ~2000 commits behind, with one 3J-only commit) to
+rule that out:
 
-```yaml
-if: github.repository == 'block/buzz'
-```
+- Upstream's canary/release workflows (`signed-macos-canary.yml`,
+  `windows-canary.yml`, `linux-canary.yml`, `release.yml`) carry the exact
+  same guard our fork's copies do — `if: github.repository == 'block/buzz'`
+  — on every build job. This isn't something we're missing by being
+  behind; Block deliberately restricts these to their own repo (likely
+  because the jobs also depend on Block-only signing secrets). Syncing the
+  fork would not unlock them.
+- Upstream also has one workflow we're missing, `desktop-release-candidate.yml`
+  — but it isn't a builder. It only validates a version-bump PR's changelog
+  and pinned files before tagging `desktop-v*`, which is what triggers the
+  (still gated) `release.yml`. Fork-syncing to pick this up would not
+  produce an installable artifact either.
+- The one *ungated* desktop build that does exist is inside `ci.yml`'s
+  `desktop-core` job (`just desktop-build`, a real `pnpm tauri build`) —
+  it runs on every push/PR on Linux (`ubuntu-latest`), with no repo-name
+  gate. But it doesn't set `BUZZ_RELAY_URL`, and it doesn't upload the
+  built app as an artifact (only test reports get uploaded, and only on
+  failure) — so nothing installable comes out of it today, and there's no
+  equivalent job for macOS/Windows.
 
-That means those workflows **cannot produce a build on our fork at all**,
-even via manual `workflow_dispatch` — the job condition fails immediately,
-before it would even reach the (Block-only) signing secrets it also
-depends on. So today, getting a desktop build means compiling from source
-yourself (`just desktop-build` after setting `BUZZ_RELAY_URL`), and the
-result would be **unsigned** — expect Gatekeeper/SmartScreen warnings on
-macOS/Windows, since we have no code-signing pipeline wired for this app.
-**We have not actually produced or tested a local build against our relay
-— this is unverified.** If you try it and it works, please update this
-doc.
+So today, getting any build means compiling from source yourself
+(`just desktop-build` after exporting `BUZZ_RELAY_URL=wss://buzz.3jtech.app`),
+and the result would be **unsigned** — expect Gatekeeper/SmartScreen
+warnings on macOS/Windows, since we have no code-signing pipeline wired for
+this app. **We have not actually produced or tested a local build against
+our relay — this is unverified.** If you try it and it works, please
+update this doc.
 
 ### iOS — the App Store app
 
@@ -107,10 +125,10 @@ From the relay's own NIP-11 metadata (`auth_required: true`,
 per-channel/per-room read gating yet. Don't post anything in a 3J Buzz
 channel that you wouldn't want every other authenticated user on the relay
 to see. **This has not been independently re-verified against a live
-account** (we don't have a working login path yet — see above) — it's
-based on reading the relay's access-control code, not on testing it as two
-different users. If you find this is wrong once real accounts exist,
-correct this doc.
+account** (we don't yet have a distributable desktop build to log in
+with — see above) — it's based on reading the relay's access-control
+code, not on testing it as two different users. If you find this is wrong
+once real accounts exist, correct this doc.
 
 ## Where to ask for help
 
