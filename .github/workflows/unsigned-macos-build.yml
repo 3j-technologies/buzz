@@ -107,6 +107,14 @@ jobs:
         run: cd desktop && pnpm tauri build --verbose --no-sign --config src-tauri/tauri.unsigned.conf.json
 
       - name: Diagnose relay bake (positive control)
+        # NOTE on the control string: `ws://localhost:3000` (DEFAULT_RELAY_WS_URL
+        # in relay.rs) is only reachable when the compile-time bake is absent.
+        # Once BUZZ_RELAY_URL is set, `option_env!(...)` constant-folds to
+        # Some(url) and rustc can prove the `.unwrap_or_else(|| DEFAULT...)`
+        # branch is dead code, legitimately eliminating that string from an
+        # otherwise-correct build. So absence of the localhost default is NOT
+        # itself evidence of a broken build -- only presence of our own target
+        # URL, on a real Mach-O, is.
         env:
           RELAY_URL: ${{ github.event.inputs.relay_url }}
         run: |
@@ -116,16 +124,23 @@ jobs:
           RAW_BIN=$(find desktop/src-tauri/target/release -maxdepth 1 -type f -perm -u+x -name 'buzz-desktop*' | head -1)
           echo "raw binary: ${RAW_BIN:-<not found>}"
           if [[ -n "${RAW_BIN:-}" ]]; then
-            echo "control 'ws://localhost:3000' present in raw binary: $(strings "$RAW_BIN" | grep -cF 'ws://localhost:3000' || true)"
-            echo "target '$RELAY_URL' present in raw binary: $(strings "$RAW_BIN" | grep -cF "$RELAY_URL" || true)"
+            file "$RAW_BIN"
+            echo "target '$RELAY_URL' present in raw binary: $(strings -a "$RAW_BIN" | grep -acF "$RELAY_URL" || true)"
           fi
-          echo "--- unbundled Buzz.app (pre-DMG) ---"
-          APP_BIN="desktop/src-tauri/target/release/bundle/macos/Buzz.app/Contents/MacOS/Buzz"
-          ls -la "desktop/src-tauri/target/release/bundle/macos/Buzz.app/Contents/MacOS/" || true
+          echo "--- unbundled Buzz.app (pre-DMG), resolving real executable name from Info.plist ---"
+          APP_DIR="desktop/src-tauri/target/release/bundle/macos/Buzz.app"
+          ls -la "$APP_DIR/Contents/MacOS/" || true
+          MAIN_BIN_NAME=$(/usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" "$APP_DIR/Contents/Info.plist")
+          echo "CFBundleExecutable: $MAIN_BIN_NAME"
+          APP_BIN="$APP_DIR/Contents/MacOS/$MAIN_BIN_NAME"
+          echo "app_bin_name=$MAIN_BIN_NAME" >> "$GITHUB_OUTPUT"
           if [[ -f "$APP_BIN" ]]; then
-            echo "control 'ws://localhost:3000' present in app binary: $(strings "$APP_BIN" | grep -cF 'ws://localhost:3000' || true)"
-            echo "target '$RELAY_URL' present in app binary: $(strings "$APP_BIN" | grep -cF "$RELAY_URL" || true)"
+            file "$APP_BIN"
+            echo "target '$RELAY_URL' present in app binary: $(strings -a "$APP_BIN" | grep -acF "$RELAY_URL" || true)"
+          else
+            echo "::error::No file at $APP_BIN"
           fi
+        id: diagnose
 
       - name: Locate unsigned DMG
         id: unsigned
@@ -142,27 +157,13 @@ jobs:
           DMG_PATH: ${{ steps.unsigned.outputs.dmg }}
         run: desktop/scripts/set-dmg-finder-text-size.sh "$DMG_PATH" 14
 
-      - name: Verify relay URL baked into build
-        env:
-          DMG_PATH: ${{ steps.unsigned.outputs.dmg }}
-          RELAY_URL: ${{ github.event.inputs.relay_url }}
-        run: |
-          set -euo pipefail
-          EXTRACT_DIR="${RUNNER_TEMP}/unsigned-app-extract"
-          rm -rf "$EXTRACT_DIR" && mkdir -p "$EXTRACT_DIR"
-          hdiutil attach "$DMG_PATH" -mountpoint "${RUNNER_TEMP}/dmg-mount" -nobrowse -quiet
-          BINARY="${RUNNER_TEMP}/dmg-mount/Buzz.app/Contents/MacOS/Buzz"
-          echo "control 'ws://localhost:3000' present: $(strings "$BINARY" | grep -cF 'ws://localhost:3000' || true)"
-          if ! strings "$BINARY" | grep -qF "$RELAY_URL"; then
-            hdiutil detach "${RUNNER_TEMP}/dmg-mount" -quiet || true
-            echo "::error::Relay URL $RELAY_URL not found baked into binary"
-            exit 1
-          fi
-          echo "Confirmed $RELAY_URL is baked into the Buzz binary."
-          hdiutil detach "${RUNNER_TEMP}/dmg-mount" -quiet
-
+      # Always stage + upload the DMG, even if the verification step below
+      # fails -- a false-negative check must never destroy a real build.
+      # The job still reports failure overall if verification fails, but the
+      # artifact is never withheld because of it.
       - name: Stage unsigned DMG
         id: artifact
+        if: always()
         env:
           VERSION: ${{ steps.version.outputs.version }}
           DMG_PATH: ${{ steps.unsigned.outputs.dmg }}
@@ -174,12 +175,31 @@ jobs:
           echo "name=$NAME" >> "$GITHUB_OUTPUT"
 
       - name: Upload unsigned build
+        if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: buzz-macos-unsigned-${{ github.sha }}
           path: ${{ steps.artifact.outputs.path }}
           if-no-files-found: error
           retention-days: 30
+
+      - name: Verify relay URL baked into build
+        env:
+          DMG_PATH: ${{ steps.unsigned.outputs.dmg }}
+          RELAY_URL: ${{ github.event.inputs.relay_url }}
+          MAIN_BIN_NAME: ${{ steps.diagnose.outputs.app_bin_name }}
+        run: |
+          set -euo pipefail
+          hdiutil attach "$DMG_PATH" -mountpoint "${RUNNER_TEMP}/dmg-mount" -nobrowse -quiet
+          BINARY="${RUNNER_TEMP}/dmg-mount/Buzz.app/Contents/MacOS/${MAIN_BIN_NAME}"
+          file "$BINARY"
+          if ! strings -a "$BINARY" | grep -qF "$RELAY_URL"; then
+            hdiutil detach "${RUNNER_TEMP}/dmg-mount" -quiet || true
+            echo "::error::Relay URL $RELAY_URL not found baked into $BINARY"
+            exit 1
+          fi
+          echo "Confirmed $RELAY_URL is baked into $BINARY."
+          hdiutil detach "${RUNNER_TEMP}/dmg-mount" -quiet
 
       - name: Save pnpm store cache
         uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
