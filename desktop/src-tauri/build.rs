@@ -18,8 +18,14 @@ fn main() {
     println!("cargo:rerun-if-env-changed=BUZZ_BUILD_AUTO_CONNECT_DEFAULT_RELAY");
     println!("cargo:rustc-check-cfg=cfg(buzz_updater_enabled)");
 
-    if let Ok(relay_url) = std::env::var("BUZZ_RELAY_URL") {
-        println!("cargo:rustc-env=BUZZ_DESKTOP_BUILD_RELAY_URL={relay_url}");
+    match std::env::var("BUZZ_RELAY_URL") {
+        Ok(relay_url) => {
+            println!("cargo:rustc-env=BUZZ_DESKTOP_BUILD_RELAY_URL={relay_url}");
+            println!("cargo:warning=BUZZ_RELAY_URL seen by build.rs: baking in {relay_url}");
+        }
+        Err(_) => {
+            println!("cargo:warning=BUZZ_RELAY_URL not set at build time; binary will fall back to compiled-in default relay URL");
+        }
     }
 
     if let Ok(relay_http) = std::env::var("BUZZ_RELAY_HTTP") {

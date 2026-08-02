@@ -106,6 +106,27 @@ jobs:
           TAURI_BUNDLER_DMG_IGNORE_CI: "true"
         run: cd desktop && pnpm tauri build --verbose --no-sign --config src-tauri/tauri.unsigned.conf.json
 
+      - name: Diagnose relay bake (positive control)
+        env:
+          RELAY_URL: ${{ github.event.inputs.relay_url }}
+        run: |
+          set -euo pipefail
+          echo "--- raw cargo binary(ies) under target/release ---"
+          find desktop/src-tauri/target/release -maxdepth 1 -type f -perm -u+x -print
+          RAW_BIN=$(find desktop/src-tauri/target/release -maxdepth 1 -type f -perm -u+x -name 'buzz-desktop*' | head -1)
+          echo "raw binary: ${RAW_BIN:-<not found>}"
+          if [[ -n "${RAW_BIN:-}" ]]; then
+            echo "control 'ws://localhost:3000' present in raw binary: $(strings "$RAW_BIN" | grep -cF 'ws://localhost:3000' || true)"
+            echo "target '$RELAY_URL' present in raw binary: $(strings "$RAW_BIN" | grep -cF "$RELAY_URL" || true)"
+          fi
+          echo "--- unbundled Buzz.app (pre-DMG) ---"
+          APP_BIN="desktop/src-tauri/target/release/bundle/macos/Buzz.app/Contents/MacOS/Buzz"
+          ls -la "desktop/src-tauri/target/release/bundle/macos/Buzz.app/Contents/MacOS/" || true
+          if [[ -f "$APP_BIN" ]]; then
+            echo "control 'ws://localhost:3000' present in app binary: $(strings "$APP_BIN" | grep -cF 'ws://localhost:3000' || true)"
+            echo "target '$RELAY_URL' present in app binary: $(strings "$APP_BIN" | grep -cF "$RELAY_URL" || true)"
+          fi
+
       - name: Locate unsigned DMG
         id: unsigned
         run: |
@@ -131,6 +152,7 @@ jobs:
           rm -rf "$EXTRACT_DIR" && mkdir -p "$EXTRACT_DIR"
           hdiutil attach "$DMG_PATH" -mountpoint "${RUNNER_TEMP}/dmg-mount" -nobrowse -quiet
           BINARY="${RUNNER_TEMP}/dmg-mount/Buzz.app/Contents/MacOS/Buzz"
+          echo "control 'ws://localhost:3000' present: $(strings "$BINARY" | grep -cF 'ws://localhost:3000' || true)"
           if ! strings "$BINARY" | grep -qF "$RELAY_URL"; then
             hdiutil detach "${RUNNER_TEMP}/dmg-mount" -quiet || true
             echo "::error::Relay URL $RELAY_URL not found baked into binary"
