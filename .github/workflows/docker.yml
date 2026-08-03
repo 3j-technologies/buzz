@@ -77,6 +77,12 @@ env:
   # variable to override (e.g., for forks that want to push to their own
   # namespace without forking this file).
   IMAGE_NAME: ${{ vars.GHCR_IMAGE != '' && vars.GHCR_IMAGE || 'ghcr.io/block/buzz' }}
+  # Same override pattern, for the standalone web UI image (web/Dockerfile).
+  # No hardcoded upstream default here since block/buzz does not publish this
+  # image at all — forks that want it set GHCR_WEB_IMAGE; those that don't
+  # never trigger the web-build/web-merge jobs below (VITE_RELAY_URL is
+  # required and left unset by default, see web-build's build-arg check).
+  WEB_IMAGE_NAME: ${{ vars.GHCR_WEB_IMAGE != '' && vars.GHCR_WEB_IMAGE || format('ghcr.io/{0}/buzz-web', github.repository_owner) }}
 
 jobs:
   build:
@@ -337,6 +343,185 @@ jobs:
             echo "Verify provenance:"
             echo '```'
             echo "gh attestation verify oci://${IMAGE_NAME}@${MERGED_DIGEST} --owner block"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  web-build:
+    name: Build web (${{ matrix.platform }})
+    # Standalone web UI (web/Dockerfile) is only meaningful for a fork that
+    # deploys it as its own container against a remote relay. Skip entirely
+    # unless BUZZ_WEB_VITE_RELAY_URL is configured — mirrors the "require it
+    # explicitly, no guessed fallback" rule from web/Dockerfile itself, and
+    # keeps this a no-op for block/buzz upstream, which does not publish
+    # this image.
+    if: vars.BUZZ_WEB_VITE_RELAY_URL != ''
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write    # push to GHCR
+      id-token: write    # OIDC for build provenance attestation
+      attestations: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-24.04
+            arch: amd64
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            arch: arm64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5  # v4.1.0
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee  # v4.2.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9  # v6.1.0
+        with:
+          images: ${{ env.WEB_IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=sha,prefix=sha-,format=short
+          labels: |
+            org.opencontainers.image.title=Buzz Web
+            org.opencontainers.image.description=Standalone web UI for the Buzz communications platform
+            org.opencontainers.image.licenses=Apache-2.0
+
+      - name: Build and push web image by digest
+        id: build
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf  # v7.2.0
+        with:
+          context: .
+          file: ./web/Dockerfile
+          platforms: ${{ matrix.platform }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # Baked in at build time — see web/Dockerfile header for why this
+          # can't be a runtime env var. Required; the Dockerfile fails the
+          # build itself if this resolves empty.
+          build-args: |
+            VITE_RELAY_URL=${{ vars.BUZZ_WEB_VITE_RELAY_URL }}
+          outputs: type=image,name=${{ env.WEB_IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=${{ github.event_name != 'pull_request' }}
+          cache-from: |
+            type=registry,ref=${{ env.WEB_IMAGE_NAME }}-buildcache:${{ matrix.arch }}
+          cache-to: |
+            ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && format('type=registry,ref={0}-buildcache:{1},mode=max,compression=zstd', env.WEB_IMAGE_NAME, matrix.arch) || '' }}
+
+      - name: Export digest
+        if: github.event_name != 'pull_request'
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: mkdir -p /tmp/web-digests && touch "/tmp/web-digests/${DIGEST#sha256:}"
+
+      - name: Upload digest
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: web-digests-${{ matrix.arch }}
+          path: /tmp/web-digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  web-merge:
+    name: Merge web multi-arch manifest
+    if: github.event_name != 'pull_request' && vars.BUZZ_WEB_VITE_RELAY_URL != ''
+    runs-on: ubuntu-24.04
+    needs: web-build
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write    # push the merged manifest
+      id-token: write    # OIDC for provenance attestation on the manifest
+      attestations: write
+    steps:
+      - name: Download all per-arch digests
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          path: /tmp/web-digests
+          pattern: web-digests-*
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5  # v4.1.0
+
+      - name: Log in to GHCR
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee  # v4.2.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9  # v6.1.0
+        with:
+          images: ${{ env.WEB_IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=sha,prefix=sha-,format=short
+
+      - name: Create and push manifest list
+        id: manifest
+        working-directory: /tmp/web-digests
+        env:
+          IMAGE_NAME: ${{ env.WEB_IMAGE_NAME }}
+          META_TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          set -euo pipefail
+          tags=()
+          while IFS= read -r tag; do
+            [ -n "$tag" ] && tags+=("-t" "$tag")
+          done <<< "$META_TAGS"
+
+          digests=()
+          for digest in *; do
+            digests+=("${IMAGE_NAME}@sha256:${digest}")
+          done
+
+          docker buildx imagetools create "${tags[@]}" "${digests[@]}"
+
+          first_tag=$(echo "$META_TAGS" | head -n1)
+          merged_digest=$(docker buildx imagetools inspect "$first_tag" \
+            --format '{{json .Manifest}}' | jq -r '.digest')
+          echo "digest=${merged_digest}" >> "$GITHUB_OUTPUT"
+
+      - name: Attest provenance for the merged image
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373  # v4.1.1
+        with:
+          subject-name: ${{ env.WEB_IMAGE_NAME }}
+          subject-digest: ${{ steps.manifest.outputs.digest }}
+          push-to-registry: true
+
+      - name: Summary
+        env:
+          IMAGE_NAME: ${{ env.WEB_IMAGE_NAME }}
+          MERGED_DIGEST: ${{ steps.manifest.outputs.digest }}
+          META_TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          {
+            echo "### Published \`${IMAGE_NAME}\`"
+            echo
+            echo "**Digest:** \`${MERGED_DIGEST}\`"
+            echo
+            echo "**Tags:**"
+            echo '```'
+            echo "${META_TAGS}"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 

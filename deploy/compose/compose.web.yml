@@ -1,0 +1,27 @@
+services:
+  # Standalone web UI, built from web/Dockerfile with VITE_RELAY_URL baked in
+  # at image-build time (see that Dockerfile for why it can't be a runtime
+  # env var here). Not required by the relay — the relay serves its own copy
+  # of the same app same-origin — this overlay is only for exposing the UI
+  # on its own host/port pointed at a relay elsewhere.
+  #
+  # Deliberately a separate compose file rather than a service in the base
+  # compose.yml: Compose interpolates every ${VAR:?...} in the whole merged
+  # file before it resolves which services are actually being targeted, so a
+  # required var on a service you didn't ask for still fails `config`/`ps`/
+  # `down`/etc. on the base file alone. Splitting it into an overlay, enabled
+  # only via BUZZ_COMPOSE_WEB=true (see run.sh), keeps the base stack
+  # operable without ever setting BUZZ_WEB_IMAGE.
+  buzz-web:
+    image: ${BUZZ_WEB_IMAGE:?set BUZZ_WEB_IMAGE}
+    ports:
+      - "${BUZZ_WEB_HTTP_PORT:-19511}:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - buzz-net
