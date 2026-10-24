@@ -48,10 +48,7 @@ fn verify(cbor: &[u8]) -> Result<VerifiedAssertion, AppAttestError> {
     verifier.verify_assertion(
         &STANDARD.encode(cbor),
         TRANSCRIPT,
-        signing_key()
-            .verifying_key()
-            .to_sec1_point(false)
-            .as_ref(),
+        signing_key().verifying_key().to_sec1_point(false).as_ref(),
         0,
         "challenge",
         "challenge",
@@ -117,10 +114,7 @@ mod conformance {
             cbor,
             TRANSCRIPT,
             APP_ID,
-            signing_key()
-                .verifying_key()
-                .to_sec1_point(false)
-                .as_ref(),
+            signing_key().verifying_key().to_sec1_point(false).as_ref(),
             0,
         )
     }
