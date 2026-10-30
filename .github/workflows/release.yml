@@ -261,6 +261,7 @@ jobs:
             ${{ steps.artifacts.outputs.dmg }}
             ${{ steps.artifacts.outputs.archive }}
             ${{ steps.artifacts.outputs.sig }}
+          retention-days: 2
 
   release-macos-x64:
     name: Release macOS (Intel)
@@ -422,6 +423,7 @@ jobs:
             ${{ steps.unsigned.outputs.dmg }}
             ${{ steps.artifacts.outputs.archive }}
             ${{ steps.artifacts.outputs.sig }}
+          retention-days: 2
 
   release-linux:
     name: Release Linux
@@ -651,6 +653,7 @@ jobs:
             ${{ steps.linux-artifacts.outputs.appimage }}
             ${{ steps.linux-artifacts.outputs.archive }}
             ${{ steps.linux-artifacts.outputs.sig }}
+          retention-days: 2
 
   release-windows:
     name: Release Windows
@@ -774,6 +777,7 @@ jobs:
           path: |
             ${{ steps.artifacts.outputs.exe }}
             ${{ steps.artifacts.outputs.sig }}
+          retention-days: 2
 
   assemble-manifest:
     name: Assemble multi-platform latest.json

@@ -171,6 +171,8 @@ jobs:
 
       - name: Build and push release image by digest
         id: build-release
+        env:
+          DOCKER_BUILD_RECORD_UPLOAD: "false"
         uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf  # v7.2.0
         with:
           context: .
@@ -189,6 +191,8 @@ jobs:
 
       - name: Build and push debug image by digest
         id: build-debug
+        env:
+          DOCKER_BUILD_RECORD_UPLOAD: "false"
         uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf  # v7.2.0
         with:
           context: .
@@ -406,6 +410,8 @@ jobs:
 
       - name: Build and push web image by digest
         id: build
+        env:
+          DOCKER_BUILD_RECORD_UPLOAD: "false"
         uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf  # v7.2.0
         with:
           context: .
@@ -579,6 +585,8 @@ jobs:
             org.opencontainers.image.licenses=Apache-2.0
       - name: Build and push by digest
         id: build
+        env:
+          DOCKER_BUILD_RECORD_UPLOAD: "false"
         uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf  # v7.2.0
         with:
           context: .

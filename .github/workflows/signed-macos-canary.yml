@@ -208,7 +208,7 @@ jobs:
           name: buzz-macos-canary-${{ github.sha }}
           path: ${{ steps.artifact.outputs.path }}
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 2
 
       - name: Save pnpm store cache
         uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5

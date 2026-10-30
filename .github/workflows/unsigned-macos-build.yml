@@ -181,7 +181,7 @@ jobs:
           name: buzz-macos-unsigned-${{ github.sha }}
           path: ${{ steps.artifact.outputs.path }}
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 3
 
       - name: Verify relay URL baked into build
         env:

@@ -103,7 +103,7 @@ jobs:
             ${{ steps.pkg.outputs.archive }}
             ${{ steps.pkg.outputs.archive }}.sha256
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 1
 
   publish:
     name: Publish rolling release

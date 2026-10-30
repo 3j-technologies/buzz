@@ -224,4 +224,4 @@ jobs:
             ${{ steps.artifacts.outputs.deb }}
             ${{ steps.artifacts.outputs.appimage }}
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 2
